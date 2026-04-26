@@ -196,6 +196,20 @@ show_client_configuration() {
   echo "跳过证书验证: True"
   echo ""
   echo ""
+  hy_warp_current_listen_port=$(jq -r '.inbounds[] | select(.tag=="hy2-warp-in") | .listen_port' /root/sbox/sbconfig_server.json)
+  hy_warp_password=$(jq -r '.inbounds[] | select(.tag=="hy2-warp-in") | .users[0].password' /root/sbox/sbconfig_server.json)
+  hy_warp_obfs_password=$(jq -r '.inbounds[] | select(.tag=="hy2-warp-in") | .obfs.password' /root/sbox/sbconfig_server.json)
+  if [ -n "$hy_warp_current_listen_port" ] && [ "$hy_warp_current_listen_port" != "null" ]; then
+    hy2_warp_server_link="hysteria2://$hy_warp_password@$server_ip:$hy_warp_current_listen_port?insecure=1&sni=$hy_current_server_name&obfs=salamander&obfs-password=$hy_warp_obfs_password#Hysteria2-Obfs-WARP"
+
+    show_notice "Hysteria2+obfs+WARP 客户端通用链接"
+    echo ""
+    echo "$hy2_warp_server_link"
+    echo ""
+    echo "提示：此入口需要本机已运行 Cloudflare WARP 本地 SOCKS5（默认 127.0.0.1:40000）"
+    echo ""
+  fi
+
   show_notice "Hysteria2 客户端yaml文件" 
 cat << EOF
 
@@ -316,6 +330,17 @@ proxies:
       path: $ws_path
       headers:
         Host: $argo
+  - name: Hysteria2-WARP
+    type: hysteria2
+    server: $server_ip
+    port: $hy_warp_current_listen_port
+    password: $hy_warp_password
+    sni: $hy_current_server_name
+    skip-cert-verify: true
+    obfs: salamander
+    obfs-password: $hy_warp_obfs_password
+    alpn:
+      - h3
 
 proxy-groups:
   - name: 节点选择
@@ -324,6 +349,7 @@ proxy-groups:
       - 自动选择
       - Reality
       - Hysteria2
+      - Hysteria2-WARP
       - Vmess
       - DIRECT
 
@@ -332,6 +358,7 @@ proxy-groups:
     proxies:
       - Reality
       - Hysteria2
+      - Hysteria2-WARP
       - Vmess
     url: "http://www.gstatic.com/generate_204"
     interval: 300
@@ -450,6 +477,7 @@ cat << EOF
         "urltest",
         "sing-box-reality",
         "sing-box-hysteria2",
+        "sing-box-hysteria2-warp",
         "sing-box-vmess"
       ]
     },
@@ -475,7 +503,7 @@ cat << EOF
         }
       }
     },
-    {
+        {
             "type": "hysteria2",
             "server": "$server_ip",
             "server_port": $hy_current_listen_port,
@@ -492,6 +520,26 @@ cat << EOF
                     "h3"
                 ]
             }
+        },
+        {
+            "type": "hysteria2",
+            "server": "$server_ip",
+            "server_port": $hy_warp_current_listen_port,
+            "tag": "sing-box-hysteria2-warp",
+            "password": "$hy_warp_password",
+            "obfs": {
+                "type": "salamander",
+                "password": "$hy_warp_obfs_password"
+            },
+            "tls": {
+                "enabled": true,
+                "server_name": "$hy_current_server_name",
+                "insecure": true,
+                "alpn": [
+                    "h3"
+                ]
+            },
+            "detour": "warp"
         },
         {
             "server": "speed.cloudflare.com",
@@ -537,8 +585,16 @@ cat << EOF
       "outbounds": [
         "sing-box-reality",
         "sing-box-hysteria2",
+        "sing-box-hysteria2-warp",
         "sing-box-vmess"
       ]
+    },
+    {
+      "tag": "warp",
+      "type": "socks",
+      "server": "127.0.0.1",
+      "server_port": 40000,
+      "version": "5"
     }
   ],
   "route": {
@@ -670,9 +726,15 @@ if [ -f "/root/sbox/sbconfig_server.json" ] && [ -f "/root/sbox/sing-box" ] && [
           # Ask for listen port
           read -p "请属于想要修改的端口 (当前端口为 $hy_current_listen_port): " hy_listen_port
           hy_listen_port=${hy_listen_port:-$hy_current_listen_port}
+          hy_warp_current_listen_port=$(jq -r '.inbounds[] | select(.tag=="hy2-warp-in") | .listen_port' /root/sbox/sbconfig_server.json)
+          if [ -z "$hy_warp_current_listen_port" ] || [ "$hy_warp_current_listen_port" = "null" ]; then
+            hy_warp_current_listen_port=9443
+          fi
+          read -p "请输入hysteria2+obfs+warp端口 (当前端口为 $hy_warp_current_listen_port): " hy_warp_listen_port
+          hy_warp_listen_port=${hy_warp_listen_port:-$hy_warp_current_listen_port}
 
           # Modify reality.json with new settings
-          jq --arg listen_port "$listen_port" --arg server_name "$server_name" --arg hy_listen_port "$hy_listen_port" '.inbounds[1].listen_port = ($hy_listen_port | tonumber) | .inbounds[0].listen_port = ($listen_port | tonumber) | .inbounds[0].tls.server_name = $server_name | .inbounds[0].tls.reality.handshake.server = $server_name' /root/sbox/sbconfig_server.json > /root/sb_modified.json
+          jq --arg listen_port "$listen_port" --arg server_name "$server_name" --arg hy_listen_port "$hy_listen_port" --arg hy_warp_listen_port "$hy_warp_listen_port" '(.inbounds[] | select(.tag=="hy2-warp-in") | .listen_port) = ($hy_warp_listen_port | tonumber) | .inbounds[1].listen_port = ($hy_listen_port | tonumber) | .inbounds[0].listen_port = ($listen_port | tonumber) | .inbounds[0].tls.server_name = $server_name | .inbounds[0].tls.reality.handshake.server = $server_name' /root/sbox/sbconfig_server.json > /root/sb_modified.json
           mv /root/sb_modified.json /root/sbox/sbconfig_server.json
 
           # Restart sing-box service
@@ -763,6 +825,14 @@ hy_password=$(/root/sbox/sing-box generate rand --hex 8)
 read -p "请输入hysteria2监听端口 (default: 8443): " hy_listen_port
 hy_listen_port=${hy_listen_port:-8443}
 echo ""
+# hysteria2 + obfs + warp
+echo "开始配置hysteria2+obfs+warp"
+echo ""
+hy_warp_password=$(/root/sbox/sing-box generate rand --hex 8)
+hy_warp_obfs_password=$(/root/sbox/sing-box generate rand --hex 16)
+read -p "请输入hysteria2+obfs+warp监听端口 (default: 9443): " hy_warp_listen_port
+hy_warp_listen_port=${hy_warp_listen_port:-9443}
+echo ""
 
 # Ask for self-signed certificate domain
 read -p "输入自签证书域名 (default: bing.com): " hy_server_name
@@ -804,7 +874,7 @@ rm -rf argo.log
 server_ip=$(curl -s4m8 ip.sb -k) || server_ip=$(curl -s6m8 ip.sb -k)
 
 # Create reality.json using jq
-jq -n --arg listen_port "$listen_port" --arg vmess_port "$vmess_port" --arg vmess_uuid "$vmess_uuid"  --arg ws_path "$ws_path" --arg server_name "$server_name" --arg private_key "$private_key" --arg short_id "$short_id" --arg uuid "$uuid" --arg hy_listen_port "$hy_listen_port" --arg hy_password "$hy_password" --arg server_ip "$server_ip" '{
+jq -n --arg listen_port "$listen_port" --arg vmess_port "$vmess_port" --arg vmess_uuid "$vmess_uuid"  --arg ws_path "$ws_path" --arg server_name "$server_name" --arg private_key "$private_key" --arg short_id "$short_id" --arg uuid "$uuid" --arg hy_listen_port "$hy_listen_port" --arg hy_password "$hy_password" --arg hy_warp_listen_port "$hy_warp_listen_port" --arg hy_warp_password "$hy_warp_password" --arg hy_warp_obfs_password "$hy_warp_obfs_password" --arg server_ip "$server_ip" '{
   "log": {
     "disabled": false,
     "level": "info",
@@ -868,9 +938,37 @@ jq -n --arg listen_port "$listen_port" --arg vmess_port "$vmess_port" --arg vmes
         "type": "ws",
         "path": $ws_path
       }
+    },
+    {
+      "type": "hysteria2",
+      "tag": "hy2-warp-in",
+      "listen": "::",
+      "listen_port": ($hy_warp_listen_port | tonumber),
+      "users": [
+        {
+          "password": $hy_warp_password
+        }
+      ],
+      "obfs": {
+        "type": "salamander",
+        "password": $hy_warp_obfs_password
+      },
+      "tls": {
+        "enabled": true,
+        "alpn": ["h3"],
+        "certificate_path": "/root/self-cert/cert.pem",
+        "key_path": "/root/self-cert/private.key"
+      }
     }
   ],
   "outbounds": [
+    {
+      "type": "socks",
+      "tag": "warp",
+      "server": "127.0.0.1",
+      "server_port": 40000,
+      "version": "5"
+    },
     {
       "type": "direct",
       "tag": "direct"
@@ -885,6 +983,11 @@ jq -n --arg listen_port "$listen_port" --arg vmess_port "$vmess_port" --arg vmes
       {
         "inbound": ["vless-in", "hy2-in", "vmess-in"],
         "action": "direct"
+      },
+      {
+        "inbound": ["hy2-warp-in"],
+        "action": "route",
+        "outbound": "warp"
       }
     ],
     "final": "direct"
