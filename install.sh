@@ -20,8 +20,61 @@ show_notice() {
     echo "                                                                                                                       "
     echo "#######################################################################################################################"
 }
+
+enable_warp_inbound() {
+  if jq -e '.inbounds[] | select(.tag=="hy2-obfs-warp-in")' /root/sbconfig_server.json > /dev/null; then
+    echo "hy2+obfs+warp 入站已存在，无需重复添加。"
+    return 0
+  fi
+
+  read -p "Enter desired hysteria2+obfs+warp listen port (default: 9443): " hy_obfs_listen_port
+  hy_obfs_listen_port=${hy_obfs_listen_port:-9443}
+  hy_obfs_password=$(/root/sing-box generate rand --hex 8)
+  hy_obfs_salamander_password=$(/root/sing-box generate rand --hex 8)
+
+  jq --arg hy_obfs_listen_port "$hy_obfs_listen_port" --arg hy_obfs_password "$hy_obfs_password" --arg hy_obfs_salamander_password "$hy_obfs_salamander_password" '
+    .inbounds += [
+      {
+        "type": "hysteria2",
+        "tag": "hy2-obfs-warp-in",
+        "listen": "::",
+        "listen_port": ($hy_obfs_listen_port | tonumber),
+        "users": [
+          {
+            "password": $hy_obfs_password
+          }
+        ],
+        "obfs": {
+          "type": "salamander",
+          "password": $hy_obfs_salamander_password
+        },
+        "tls": {
+          "enabled": true,
+          "alpn": [
+            "h3"
+          ],
+          "certificate_path": "/root/self-cert/cert.pem",
+          "key_path": "/root/self-cert/private.key"
+        }
+      }
+    ]
+    | (if any(.outbounds[]; .tag=="warp-out") then . else .outbounds += [{"type":"socks","tag":"warp-out","server":"127.0.0.1","server_port":40000}] end)
+    | (if any(.route.rules[]?; .inbound? and (.inbound | index("hy2-obfs-warp-in"))) then . else .route.rules = ([{"inbound":["hy2-obfs-warp-in"],"outbound":"warp-out"}] + .route.rules) end)
+  ' /root/sbconfig_server.json > /root/sb_modified.json
+  mv /root/sb_modified.json /root/sbconfig_server.json
+
+  if /root/sing-box check -c /root/sbconfig_server.json; then
+    systemctl restart sing-box
+    echo "已添加 hy2+obfs+warp 入站。请确认 warp-go SOCKS5(127.0.0.1:40000) 正常运行。"
+  else
+    echo "配置检查失败，已停止更新。"
+    return 1
+  fi
+}
 # Introduction animation
 print_with_delay "sing-reality-hy2-box" 0.05
+echo "[提示] install.sh 仅安装 Reality + Hysteria2（不含 hy2+obfs+warp 入站）。"
+echo "[提示] 如需 WARP 节点，请运行 reality_hy2_ws.sh。"
 echo ""
 echo ""
 # install base
@@ -263,8 +316,9 @@ if [ -f "/root/sbconfig_server.json" ] && [ -f "/root/sing-box" ] && [ -f "/root
     echo "3. 显示客户端配置"
     echo "4. 卸载"
     echo "5. 更新sing-box内核"
+    echo "6. 为现有安装增加hy2+obfs+warp入站"
     echo ""
-    read -p "Enter your choice (1-5): " choice
+    read -p "Enter your choice (1-6): " choice
 
     case $choice in
         1)
@@ -366,6 +420,12 @@ if [ -f "/root/sbconfig_server.json" ] && [ -f "/root/sing-box" ] && [ -f "/root
           fi
           echo ""  
           exit 1
+          ;;
+      6)
+          show_notice "为现有配置增加hy2+obfs+warp入站"
+          enable_warp_inbound
+          show_client_configuration
+          exit 0
           ;;
       *)
           echo "Invalid choice. Exiting."
