@@ -5,7 +5,9 @@
 
 - 无脑回车一键安装或者自定义安装
 - 完全无需域名，使用自签证书部署hy2，使用cloudflared tunnel支持vmess ws优选ip
-- 支持修改reality端口号和域名，hysteria2端口号
+- 新增 hysteria2 + salamander obfs + Cloudflare WARP 入站（默认转发到本机 warp-go socks5:40000）
+- 支持修改reality端口号和域名，hysteria2端口号，以及hy2+obfs+warp端口号
+- 旧版已安装用户再次运行脚本会自动补齐 hy2+obfs+warp 配置
 - 无脑生成sing-box，clash-meta，v2rayN，nekoray等通用链接格式
 
 ## 需求

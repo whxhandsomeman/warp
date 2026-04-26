@@ -134,15 +134,15 @@ download_cloudflared(){
 # client configuration
 show_client_configuration() {
   # Get current listen port
-  current_listen_port=$(jq -r '.inbounds[0].listen_port' /root/sbox/sbconfig_server.json)
+  current_listen_port=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .listen_port' /root/sbox/sbconfig_server.json)
   # Get current server name
-  current_server_name=$(jq -r '.inbounds[0].tls.server_name' /root/sbox/sbconfig_server.json)
+  current_server_name=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .tls.server_name' /root/sbox/sbconfig_server.json)
   # Get the UUID
-  uuid=$(jq -r '.inbounds[0].users[0].uuid' /root/sbox/sbconfig_server.json)
+  uuid=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .users[0].uuid' /root/sbox/sbconfig_server.json)
   # Get the public key from the file, decoding it from base64
   public_key=$(base64 --decode /root/sbox/public.key.b64)
   # Get the short ID
-  short_id=$(jq -r '.inbounds[0].tls.reality.short_id[0]' /root/sbox/sbconfig_server.json)
+  short_id=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .tls.reality.short_id[0]' /root/sbox/sbconfig_server.json)
   # Retrieve the server IP address
   server_ip=$(curl -s4m8 ip.sb -k) || server_ip=$(curl -s6m8 ip.sb -k)
   echo ""
@@ -169,11 +169,11 @@ show_client_configuration() {
   echo ""
   echo ""
   # Get current listen port
-  hy_current_listen_port=$(jq -r '.inbounds[1].listen_port' /root/sbox/sbconfig_server.json)
+  hy_current_listen_port=$(jq -r '.inbounds[] | select(.tag=="hy2-in") | .listen_port' /root/sbox/sbconfig_server.json)
   # Get current server name
   hy_current_server_name=$(openssl x509 -in /root/self-cert/cert.pem -noout -subject -nameopt RFC2253 | awk -F'=' '{print $NF}')
   # Get the password
-  hy_password=$(jq -r '.inbounds[1].users[0].password' /root/sbox/sbconfig_server.json)
+  hy_password=$(jq -r '.inbounds[] | select(.tag=="hy2-in") | .users[0].password' /root/sbox/sbconfig_server.json)
   # Generate the link
   
   hy2_server_link="hysteria2://$hy_password@$server_ip:$hy_current_listen_port?insecure=1&sni=$hy_current_server_name"
@@ -219,9 +219,21 @@ socks5:
 
 EOF
 
+  hy_obfs_current_listen_port=$(jq -r '.inbounds[] | select(.tag=="hy2-obfs-warp-in") | .listen_port' /root/sbox/sbconfig_server.json)
+  hy_obfs_password=$(jq -r '.inbounds[] | select(.tag=="hy2-obfs-warp-in") | .users[0].password' /root/sbox/sbconfig_server.json)
+  hy_obfs_salamander_password=$(jq -r '.inbounds[] | select(.tag=="hy2-obfs-warp-in") | .obfs.password' /root/sbox/sbconfig_server.json)
+  hy2_obfs_server_link="hysteria2://$hy_obfs_password@$server_ip:$hy_obfs_current_listen_port?insecure=1&sni=$hy_current_server_name&obfs=salamander&obfs-password=$hy_obfs_salamander_password#HY2-OBFS-WARP"
+
+  show_notice "Hysteria2 + obfs + WARP 客户端通用链接"
+  echo ""
+  echo "$hy2_obfs_server_link"
+  echo ""
+  echo "注意：该入站默认通过本机 127.0.0.1:40000 的 WARP SOCKS5 出站，请先安装并启动 warp-go。"
+  echo ""
+
   argo=$(base64 --decode /root/sbox/argo.txt.b64)
-  vmess_uuid=$(jq -r '.inbounds[2].users[0].uuid' /root/sbox/sbconfig_server.json)
-  ws_path=$(jq -r '.inbounds[2].transport.path' /root/sbox/sbconfig_server.json)
+  vmess_uuid=$(jq -r '.inbounds[] | select(.tag=="vmess-in") | .users[0].uuid' /root/sbox/sbconfig_server.json)
+  ws_path=$(jq -r '.inbounds[] | select(.tag=="vmess-in") | .transport.path' /root/sbox/sbconfig_server.json)
   show_notice "vmess ws 通用链接参数" 
   echo ""
   echo ""
@@ -299,6 +311,17 @@ proxies:
     skip-cert-verify: true
     alpn:
       - h3
+  - name: Hysteria2-Obfs-WARP
+    type: hysteria2
+    server: $server_ip
+    port: $hy_obfs_current_listen_port
+    password: $hy_obfs_password
+    sni: $hy_current_server_name
+    skip-cert-verify: true
+    alpn:
+      - h3
+    obfs: salamander
+    obfs-password: $hy_obfs_salamander_password
   - name: Vmess
     type: vmess
     server: speed.cloudflare.com
@@ -324,6 +347,7 @@ proxy-groups:
       - 自动选择
       - Reality
       - Hysteria2
+      - Hysteria2-Obfs-WARP
       - Vmess
       - DIRECT
 
@@ -332,6 +356,7 @@ proxy-groups:
     proxies:
       - Reality
       - Hysteria2
+      - Hysteria2-Obfs-WARP
       - Vmess
     url: "http://www.gstatic.com/generate_204"
     interval: 300
@@ -446,10 +471,11 @@ cat << EOF
       "tag": "select",
       "type": "selector",
       "default": "urltest",
-      "outbounds": [
+        "outbounds": [
         "urltest",
         "sing-box-reality",
         "sing-box-hysteria2",
+        "sing-box-hysteria2-obfs-warp",
         "sing-box-vmess"
       ]
     },
@@ -484,6 +510,27 @@ cat << EOF
             "up_mbps": 100,
             "down_mbps": 100,
             "password": "$hy_password",
+            "tls": {
+                "enabled": true,
+                "server_name": "$hy_current_server_name",
+                "insecure": true,
+                "alpn": [
+                    "h3"
+                ]
+            }
+        },
+        {
+            "type": "hysteria2",
+            "server": "$server_ip",
+            "server_port": $hy_obfs_current_listen_port,
+            "tag": "sing-box-hysteria2-obfs-warp",
+            "up_mbps": 100,
+            "down_mbps": 100,
+            "password": "$hy_obfs_password",
+            "obfs": {
+                "type": "salamander",
+                "password": "$hy_obfs_salamander_password"
+            },
             "tls": {
                 "enabled": true,
                 "server_name": "$hy_current_server_name",
@@ -537,6 +584,7 @@ cat << EOF
       "outbounds": [
         "sing-box-reality",
         "sing-box-hysteria2",
+        "sing-box-hysteria2-obfs-warp",
         "sing-box-vmess"
       ]
     }
@@ -607,11 +655,70 @@ uninstall_singbox() {
           rm -rf /root/sbox/
           echo "DONE!"
 }
+
+# migrate old installations to support hy2 + obfs + warp inbound
+migrate_hy2_obfs_warp() {
+  if [ ! -f "/root/sbox/sbconfig_server.json" ]; then
+    return
+  fi
+
+  has_hy2_obfs=$(jq -r '[.inbounds[] | select(.tag=="hy2-obfs-warp-in")] | length' /root/sbox/sbconfig_server.json 2>/dev/null)
+  if [ "$has_hy2_obfs" = "0" ]; then
+    echo "检测到旧配置，正在自动追加 hy2+obfs+warp 入站..."
+    hy_obfs_password=$(/root/sbox/sing-box generate rand --hex 8 2>/dev/null || openssl rand -hex 8)
+    hy_obfs_salamander_password=$(/root/sbox/sing-box generate rand --hex 16 2>/dev/null || openssl rand -hex 16)
+    hy_obfs_listen_port=9443
+
+    jq --arg hy_obfs_listen_port "$hy_obfs_listen_port" --arg hy_obfs_password "$hy_obfs_password" --arg hy_obfs_salamander_password "$hy_obfs_salamander_password" '
+      .inbounds += [{
+        "type": "hysteria2",
+        "tag": "hy2-obfs-warp-in",
+        "listen": "::",
+        "listen_port": ($hy_obfs_listen_port | tonumber),
+        "users": [{"password": $hy_obfs_password}],
+        "obfs": {
+          "type": "salamander",
+          "password": $hy_obfs_salamander_password
+        },
+        "tls": {
+          "enabled": true,
+          "alpn": ["h3"],
+          "certificate_path": "/root/self-cert/cert.pem",
+          "key_path": "/root/self-cert/private.key"
+        }
+      }]
+    ' /root/sbox/sbconfig_server.json > /root/sb_modified.json && mv /root/sb_modified.json /root/sbox/sbconfig_server.json
+  fi
+
+  has_warp_out=$(jq -r '[.outbounds[] | select(.tag=="warp-out")] | length' /root/sbox/sbconfig_server.json 2>/dev/null)
+  if [ "$has_warp_out" = "0" ]; then
+    jq '
+      .outbounds = ([{
+        "type": "socks",
+        "tag": "warp-out",
+        "server": "127.0.0.1",
+        "server_port": 40000
+      }] + .outbounds)
+    ' /root/sbox/sbconfig_server.json > /root/sb_modified.json && mv /root/sb_modified.json /root/sbox/sbconfig_server.json
+  fi
+
+  has_warp_rule=$(jq -r '[.route.rules[] | select((.inbound // []) | index("hy2-obfs-warp-in"))] | length' /root/sbox/sbconfig_server.json 2>/dev/null)
+  if [ "$has_warp_rule" = "0" ]; then
+    jq '
+      .route.rules = ([{
+        "inbound": ["hy2-obfs-warp-in"],
+        "action": "route",
+        "outbound": "warp-out"
+      }] + .route.rules)
+    ' /root/sbox/sbconfig_server.json > /root/sb_modified.json && mv /root/sb_modified.json /root/sbox/sbconfig_server.json
+  fi
+}
 install_base
 
 # Check if reality.json, sing-box, and sing-box.service already exist
 if [ -f "/root/sbox/sbconfig_server.json" ] && [ -f "/root/sbox/sing-box" ] && [ -f "/root/sbox/public.key.b64" ] && [ -f "/root/sbox/argo.txt.b64" ] && [ -f "/etc/systemd/system/sing-box.service" ]; then
 
+    migrate_hy2_obfs_warp
     echo "sing-box-reality-hysteria2已经安装"
     echo ""
     echo "请选择选项:"
@@ -648,14 +755,14 @@ if [ -f "/root/sbox/sbconfig_server.json" ] && [ -f "/root/sbox/sing-box" ] && [
           #Reality modify
           show_notice "开始修改reality端口和域名"
           # Get current listen port
-          current_listen_port=$(jq -r '.inbounds[0].listen_port' /root/sbox/sbconfig_server.json)
+          current_listen_port=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .listen_port' /root/sbox/sbconfig_server.json)
 
           # Ask for listen port
           read -p "请输入想要修改的端口号 (当前端口为 $current_listen_port): " listen_port
           listen_port=${listen_port:-$current_listen_port}
 
           # Get current server name
-          current_server_name=$(jq -r '.inbounds[0].tls.server_name' /root/sbox/sbconfig_server.json)
+          current_server_name=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .tls.server_name' /root/sbox/sbconfig_server.json)
 
           # Ask for server name (sni)
           read -p "请输入想要使用的h2域名 (当前域名为 $current_server_name): " server_name
@@ -665,14 +772,31 @@ if [ -f "/root/sbox/sbconfig_server.json" ] && [ -f "/root/sbox/sing-box" ] && [
           show_notice "开始修改hysteria2端口"
           echo ""
           # Get current listen port
-          hy_current_listen_port=$(jq -r '.inbounds[1].listen_port' /root/sbox/sbconfig_server.json)
+          hy_current_listen_port=$(jq -r '.inbounds[] | select(.tag=="hy2-in") | .listen_port' /root/sbox/sbconfig_server.json)
           
+          hy_obfs_current_listen_port=$(jq -r '.inbounds[] | select(.tag=="hy2-obfs-warp-in") | .listen_port' /root/sbox/sbconfig_server.json)
+          read -p "请输hy2+obfs+warp端口 (当前端口为 $hy_obfs_current_listen_port): " hy_obfs_listen_port
+          hy_obfs_listen_port=${hy_obfs_listen_port:-$hy_obfs_current_listen_port}
+
           # Ask for listen port
           read -p "请属于想要修改的端口 (当前端口为 $hy_current_listen_port): " hy_listen_port
           hy_listen_port=${hy_listen_port:-$hy_current_listen_port}
 
           # Modify reality.json with new settings
-          jq --arg listen_port "$listen_port" --arg server_name "$server_name" --arg hy_listen_port "$hy_listen_port" '.inbounds[1].listen_port = ($hy_listen_port | tonumber) | .inbounds[0].listen_port = ($listen_port | tonumber) | .inbounds[0].tls.server_name = $server_name | .inbounds[0].tls.reality.handshake.server = $server_name' /root/sbox/sbconfig_server.json > /root/sb_modified.json
+          jq --arg listen_port "$listen_port" --arg server_name "$server_name" --arg hy_listen_port "$hy_listen_port" --arg hy_obfs_listen_port "$hy_obfs_listen_port" '
+            .inbounds |= map(
+              if .tag=="vless-in" then
+                .listen_port = ($listen_port | tonumber)
+                | .tls.server_name = $server_name
+                | .tls.reality.handshake.server = $server_name
+              elif .tag=="hy2-in" then
+                .listen_port = ($hy_listen_port | tonumber)
+              elif .tag=="hy2-obfs-warp-in" then
+                .listen_port = ($hy_obfs_listen_port | tonumber)
+              else
+                .
+              end
+            )' /root/sbox/sbconfig_server.json > /root/sb_modified.json
           mv /root/sb_modified.json /root/sbox/sbconfig_server.json
 
           # Restart sing-box service
@@ -763,6 +887,11 @@ hy_password=$(/root/sbox/sing-box generate rand --hex 8)
 read -p "请输入hysteria2监听端口 (default: 8443): " hy_listen_port
 hy_listen_port=${hy_listen_port:-8443}
 echo ""
+hy_obfs_password=$(/root/sbox/sing-box generate rand --hex 8)
+hy_obfs_salamander_password=$(/root/sbox/sing-box generate rand --hex 16)
+read -p "请输入hysteria2+obfs+warp监听端口 (default: 9443): " hy_obfs_listen_port
+hy_obfs_listen_port=${hy_obfs_listen_port:-9443}
+echo ""
 
 # Ask for self-signed certificate domain
 read -p "输入自签证书域名 (default: bing.com): " hy_server_name
@@ -804,7 +933,7 @@ rm -rf argo.log
 server_ip=$(curl -s4m8 ip.sb -k) || server_ip=$(curl -s6m8 ip.sb -k)
 
 # Create reality.json using jq
-jq -n --arg listen_port "$listen_port" --arg vmess_port "$vmess_port" --arg vmess_uuid "$vmess_uuid"  --arg ws_path "$ws_path" --arg server_name "$server_name" --arg private_key "$private_key" --arg short_id "$short_id" --arg uuid "$uuid" --arg hy_listen_port "$hy_listen_port" --arg hy_password "$hy_password" --arg server_ip "$server_ip" '{
+jq -n --arg listen_port "$listen_port" --arg vmess_port "$vmess_port" --arg vmess_uuid "$vmess_uuid"  --arg ws_path "$ws_path" --arg server_name "$server_name" --arg private_key "$private_key" --arg short_id "$short_id" --arg uuid "$uuid" --arg hy_listen_port "$hy_listen_port" --arg hy_password "$hy_password" --arg hy_obfs_listen_port "$hy_obfs_listen_port" --arg hy_obfs_password "$hy_obfs_password" --arg hy_obfs_salamander_password "$hy_obfs_salamander_password" --arg server_ip "$server_ip" '{
   "log": {
     "disabled": false,
     "level": "info",
@@ -854,6 +983,27 @@ jq -n --arg listen_port "$listen_port" --arg vmess_port "$vmess_port" --arg vmes
       }
     },
     {
+      "type": "hysteria2",
+      "tag": "hy2-obfs-warp-in",
+      "listen": "::",
+      "listen_port": ($hy_obfs_listen_port | tonumber),
+      "users": [
+        {
+          "password": $hy_obfs_password
+        }
+      ],
+      "obfs": {
+        "type": "salamander",
+        "password": $hy_obfs_salamander_password
+      },
+      "tls": {
+        "enabled": true,
+        "alpn": ["h3"],
+        "certificate_path": "/root/self-cert/cert.pem",
+        "key_path": "/root/self-cert/private.key"
+      }
+    },
+    {
       "type": "vmess",
       "tag": "vmess-in",
       "listen": "::",
@@ -872,6 +1022,12 @@ jq -n --arg listen_port "$listen_port" --arg vmess_port "$vmess_port" --arg vmes
   ],
   "outbounds": [
     {
+      "type": "socks",
+      "tag": "warp-out",
+      "server": "127.0.0.1",
+      "server_port": 40000
+    },
+    {
       "type": "direct",
       "tag": "direct"
     }
@@ -881,6 +1037,11 @@ jq -n --arg listen_port "$listen_port" --arg vmess_port "$vmess_port" --arg vmes
       {
         "protocol": "dns",
         "action": "hijack-dns"
+      },
+      {
+        "inbound": ["hy2-obfs-warp-in"],
+        "action": "route",
+        "outbound": "warp-out"
       },
       {
         "inbound": ["vless-in", "hy2-in", "vmess-in"],
